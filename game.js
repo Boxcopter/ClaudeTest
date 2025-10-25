@@ -13,10 +13,13 @@ class Game {
         this.buildings = [];
         this.projectiles = [];
         this.particles = [];
+        this.palmTrees = [];
         this.destroyedCount = 0;
         this.flagRevealed = false;
         this.flagCaptured = false;
         this.gameWon = false;
+        this.gameStarted = false;
+        this.selectedVehicle = null;
 
         // Isometric settings
         this.tileWidth = 64;
@@ -30,10 +33,45 @@ class Game {
             y: 0
         };
 
+        // Vehicle definitions
+        this.vehicleTypes = {
+            tank: {
+                name: 'Tank',
+                speed: 0.08,
+                maxSpeed: 0.15,
+                fireRate: 30,
+                projectileSpeed: 0.4,
+                damage: 2,
+                size: 1.0,
+                canFly: false
+            },
+            hummer: {
+                name: 'Hummer',
+                speed: 0.15,
+                maxSpeed: 0.3,
+                fireRate: 15,
+                projectileSpeed: 0.6,
+                damage: 1,
+                size: 0.8,
+                canFly: false
+            },
+            helicopter: {
+                name: 'Helicopter',
+                speed: 0.12,
+                maxSpeed: 0.25,
+                fireRate: 10,
+                projectileSpeed: 0.5,
+                damage: 1,
+                size: 1.2,
+                canFly: true,
+                altitude: 0
+            }
+        };
+
         // Initialize
         this.initMap();
-        this.initPlayer();
         this.initBuildings();
+        this.initPalmTrees();
         this.initEventListeners();
         this.lastTime = 0;
 
@@ -42,7 +80,7 @@ class Game {
     }
 
     initMap() {
-        // Create tile map with islands
+        // Create tile map with 3D islands
         this.map = [];
         for (let y = 0; y < this.mapHeight; y++) {
             this.map[y] = [];
@@ -62,8 +100,48 @@ class Game {
                               (Math.abs(x - 30) < 5 && Math.abs(y - 10) < 5) ||
                               (Math.abs(x - 10) < 5 && Math.abs(y - 30) < 5);
 
+                // Calculate terrain height for 3D effect
+                let height = 0;
+                let type = 'water';
+
+                if (isLand) {
+                    // Calculate distance to nearest water for sand detection
+                    let nearWater = false;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            const nx = x + dx;
+                            const ny = y + dy;
+                            if (nx >= 0 && nx < this.mapWidth && ny >= 0 && ny < this.mapHeight) {
+                                const nCenterX = this.mapWidth / 2;
+                                const nCenterY = this.mapHeight / 2;
+                                const nDistFromCenter = Math.sqrt(
+                                    Math.pow(nx - nCenterX, 2) + Math.pow(ny - nCenterY, 2)
+                                );
+                                const nNoise = Math.sin(nx * 0.3) * Math.cos(ny * 0.3);
+                                const nIsLand = nDistFromCenter < 12 + nNoise * 3 ||
+                                              (Math.abs(nx - 10) < 5 && Math.abs(ny - 10) < 5) ||
+                                              (Math.abs(nx - 30) < 5 && Math.abs(ny - 30) < 5) ||
+                                              (Math.abs(nx - 30) < 5 && Math.abs(ny - 10) < 5) ||
+                                              (Math.abs(nx - 10) < 5 && Math.abs(ny - 30) < 5);
+                                if (!nIsLand) nearWater = true;
+                            }
+                        }
+                    }
+
+                    if (nearWater) {
+                        type = 'sand';
+                        height = 0.2;
+                    } else {
+                        type = 'grass';
+                        // Height increases toward center of island
+                        const localNoise = Math.sin(x * 0.5) * Math.cos(y * 0.5) * 0.3;
+                        height = 0.5 + localNoise;
+                    }
+                }
+
                 this.map[y][x] = {
-                    type: isLand ? 'grass' : 'water',
+                    type: type,
+                    height: height,
                     x: x,
                     y: y
                 };
@@ -71,23 +149,60 @@ class Game {
         }
     }
 
-    initPlayer() {
+    initPlayer(vehicleType) {
+        const vehicle = this.vehicleTypes[vehicleType];
+        this.selectedVehicle = vehicleType;
+
         this.player = {
             x: this.mapWidth / 2,
             y: this.mapHeight / 2,
             vx: 0,
             vy: 0,
             angle: 0,
-            speed: 0.1,
-            maxSpeed: 0.2,
+            speed: vehicle.speed,
+            maxSpeed: vehicle.maxSpeed,
             friction: 0.95,
-            size: 0.8,
+            size: vehicle.size,
             hasFlag: false,
+            vehicleType: vehicleType,
+            canFly: vehicle.canFly,
+            altitude: 0,
+            targetAltitude: 0,
             weapon: {
                 cooldown: 0,
-                maxCooldown: 20
+                maxCooldown: vehicle.fireRate,
+                damage: vehicle.damage,
+                projectileSpeed: vehicle.projectileSpeed
             }
         };
+    }
+
+    initPalmTrees() {
+        // Add palm trees on islands
+        for (let i = 0; i < 60; i++) {
+            let x, y;
+            let attempts = 0;
+
+            // Find a valid position on land
+            do {
+                x = Math.floor(Math.random() * this.mapWidth);
+                y = Math.floor(Math.random() * this.mapHeight);
+                attempts++;
+            } while ((!this.isOnLand(x, y) || this.map[y][x].type === 'sand') && attempts < 100);
+
+            if (attempts < 100) {
+                this.palmTrees.push({
+                    x: x + Math.random() * 0.6 - 0.3,
+                    y: y + Math.random() * 0.6 - 0.3,
+                    height: 2 + Math.random() * 1,
+                    destroyed: false,
+                    burning: false,
+                    burnTime: 0,
+                    leanAngle: 0,
+                    leanDirection: 0
+                });
+            }
+        }
     }
 
     initBuildings() {
@@ -131,7 +246,36 @@ class Game {
     }
 
     initEventListeners() {
+        // Handle vehicle selection
+        this.canvas.addEventListener('click', (e) => {
+            if (!this.gameStarted) {
+                const rect = this.canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                // Check which vehicle was clicked
+                const centerY = this.canvas.height / 2;
+                const spacing = 300;
+                const vehiclePositions = {
+                    tank: this.canvas.width / 2 - spacing,
+                    hummer: this.canvas.width / 2,
+                    helicopter: this.canvas.width / 2 + spacing
+                };
+
+                for (let [type, posX] of Object.entries(vehiclePositions)) {
+                    const dist = Math.sqrt(Math.pow(x - posX, 2) + Math.pow(y - centerY, 2));
+                    if (dist < 80) {
+                        this.initPlayer(type);
+                        this.gameStarted = true;
+                        break;
+                    }
+                }
+            }
+        });
+
         window.addEventListener('keydown', (e) => {
+            if (!this.gameStarted) return;
+
             this.keys[e.key.toLowerCase()] = true;
 
             // Fire weapon
@@ -143,6 +287,16 @@ class Game {
             // Interact with buildings
             if (e.key.toLowerCase() === 'e') {
                 this.interact();
+            }
+
+            // Helicopter altitude control
+            if (this.player && this.player.canFly) {
+                if (e.key.toLowerCase() === 'q') {
+                    this.player.targetAltitude = Math.max(0, this.player.targetAltitude - 1);
+                }
+                if (e.key.toLowerCase() === 'z') {
+                    this.player.targetAltitude = Math.min(3, this.player.targetAltitude + 1);
+                }
             }
         });
 
@@ -193,10 +347,10 @@ class Game {
         const projectile = {
             x: this.player.x,
             y: this.player.y,
-            vx: Math.cos(this.player.angle) * 0.5,
-            vy: Math.sin(this.player.angle) * 0.5,
+            vx: Math.cos(this.player.angle) * this.player.weapon.projectileSpeed,
+            vy: Math.sin(this.player.angle) * this.player.weapon.projectileSpeed,
             life: 60,
-            damage: 1
+            damage: this.player.weapon.damage
         };
 
         this.projectiles.push(projectile);
@@ -206,6 +360,15 @@ class Game {
         // Update weapon cooldown
         if (this.player.weapon.cooldown > 0) {
             this.player.weapon.cooldown--;
+        }
+
+        // Update helicopter altitude
+        if (this.player.canFly) {
+            if (this.player.altitude < this.player.targetAltitude) {
+                this.player.altitude += 0.05;
+            } else if (this.player.altitude > this.player.targetAltitude) {
+                this.player.altitude -= 0.05;
+            }
         }
 
         // Player movement
@@ -239,10 +402,33 @@ class Game {
         const newX = this.player.x + this.player.vx;
         const newY = this.player.y + this.player.vy;
 
-        // Check if new position is on land
-        if (this.isOnLand(newX, newY)) {
+        // Check if new position is on land (or flying)
+        if (this.player.canFly && this.player.altitude > 0.5) {
+            // Helicopter can fly over water
             this.player.x = newX;
             this.player.y = newY;
+        } else if (this.isOnLand(newX, newY)) {
+            this.player.x = newX;
+            this.player.y = newY;
+
+            // Check collision with palm trees (run over)
+            if (!this.player.canFly || this.player.altitude < 0.5) {
+                for (let tree of this.palmTrees) {
+                    if (!tree.destroyed) {
+                        const dist = Math.sqrt(
+                            Math.pow(this.player.x - tree.x, 2) +
+                            Math.pow(this.player.y - tree.y, 2)
+                        );
+
+                        if (dist < 0.5) {
+                            tree.destroyed = true;
+                            tree.leanAngle = this.player.angle;
+                            tree.leanDirection = 1;
+                            this.createParticles(tree.x, tree.y, '#8b4513', 15);
+                        }
+                    }
+                }
+            }
         } else {
             this.player.vx *= 0.5;
             this.player.vy *= 0.5;
@@ -262,6 +448,8 @@ class Game {
             proj.x += proj.vx;
             proj.y += proj.vy;
             proj.life--;
+
+            let hitSomething = false;
 
             // Check collision with buildings
             for (let building of this.buildings) {
@@ -287,15 +475,69 @@ class Game {
                             this.updateUI();
                         }
 
-                        this.projectiles.splice(i, 1);
+                        hitSomething = true;
                         break;
                     }
                 }
             }
 
-            // Remove old projectiles
-            if (proj.life <= 0 || !this.isOnLand(proj.x, proj.y)) {
+            // Check collision with palm trees
+            if (!hitSomething) {
+                for (let tree of this.palmTrees) {
+                    if (!tree.destroyed && !tree.burning) {
+                        const dist = Math.sqrt(
+                            Math.pow(proj.x - tree.x, 2) +
+                            Math.pow(proj.y - tree.y, 2)
+                        );
+
+                        if (dist < 0.4) {
+                            tree.burning = true;
+                            tree.burnTime = 100;
+                            this.createParticles(tree.x, tree.y, '#f80', 15);
+                            hitSomething = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Remove projectile if hit something
+            if (hitSomething) {
                 this.projectiles.splice(i, 1);
+                continue;
+            }
+
+            // Remove old projectiles
+            if (proj.life <= 0 || (!this.player.canFly && !this.isOnLand(proj.x, proj.y))) {
+                this.projectiles.splice(i, 1);
+            }
+        }
+
+        // Update palm trees
+        for (let i = this.palmTrees.length - 1; i >= 0; i--) {
+            const tree = this.palmTrees[i];
+
+            if (tree.burning) {
+                tree.burnTime--;
+
+                // Create fire particles
+                if (Math.random() < 0.3) {
+                    this.createParticles(tree.x, tree.y, '#f60', 3);
+                }
+
+                if (tree.burnTime <= 0) {
+                    tree.destroyed = true;
+                    tree.burning = false;
+                    this.createParticles(tree.x, tree.y, '#222', 20);
+                }
+            }
+
+            // Animate leaning for destroyed trees
+            if (tree.destroyed && tree.leanDirection > 0) {
+                tree.leanDirection += 0.02;
+                if (tree.leanDirection >= Math.PI / 2) {
+                    tree.leanDirection = -1; // Finished falling
+                }
             }
         }
 
@@ -340,7 +582,7 @@ class Game {
             return false;
         }
 
-        return this.map[ty][tx].type === 'grass';
+        return this.map[ty][tx].type === 'grass' || this.map[ty][tx].type === 'sand';
     }
 
     updateUI() {
@@ -361,15 +603,16 @@ class Game {
         document.getElementById('flag-status').textContent = flagStatus;
     }
 
-    // Isometric conversion
-    toScreen(worldX, worldY) {
+    // Isometric conversion with height support
+    toScreen(worldX, worldY, height = 0) {
         const isoX = (worldX - worldY) * this.tileWidth / 2;
         const isoY = (worldX + worldY) * this.tileHeight / 2;
 
         const screenX = this.canvas.width / 2 + isoX -
                        (this.camera.x - this.camera.y) * this.tileWidth / 2;
         const screenY = this.canvas.height / 2 + isoY -
-                       (this.camera.x + this.camera.y) * this.tileHeight / 2;
+                       (this.camera.x + this.camera.y) * this.tileHeight / 2 -
+                       height * 20; // Height offset
 
         return { x: screenX, y: screenY };
     }
@@ -378,6 +621,12 @@ class Game {
         // Clear canvas
         this.ctx.fillStyle = '#001100';
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // Show vehicle selection screen if game hasn't started
+        if (!this.gameStarted) {
+            this.renderVehicleSelection();
+            return;
+        }
 
         // Calculate visible tiles
         const viewRange = 15;
@@ -393,7 +642,7 @@ class Game {
         for (let y = startY; y < endY; y++) {
             for (let x = startX; x < endX; x++) {
                 const tile = this.map[y][x];
-                const screen = this.toScreen(x, y);
+                const screen = this.toScreen(x, y, tile.height);
                 renderQueue.push({
                     type: 'tile',
                     tile: tile,
@@ -403,11 +652,27 @@ class Game {
             }
         }
 
+        // Add palm trees to render queue
+        for (let tree of this.palmTrees) {
+            if (tree.x >= startX && tree.x < endX &&
+                tree.y >= startY && tree.y < endY) {
+                const tileHeight = this.getTileHeight(tree.x, tree.y);
+                const screen = this.toScreen(tree.x, tree.y, tileHeight);
+                renderQueue.push({
+                    type: 'palmtree',
+                    tree: tree,
+                    screen: screen,
+                    sortY: tree.y + tree.x
+                });
+            }
+        }
+
         // Add buildings to render queue
         for (let building of this.buildings) {
             if (building.x >= startX && building.x < endX &&
                 building.y >= startY && building.y < endY) {
-                const screen = this.toScreen(building.x, building.y);
+                const tileHeight = this.getTileHeight(building.x, building.y);
+                const screen = this.toScreen(building.x, building.y, tileHeight);
                 renderQueue.push({
                     type: 'building',
                     building: building,
@@ -418,7 +683,8 @@ class Game {
         }
 
         // Add home base
-        const homeScreen = this.toScreen(this.homeBase.x, this.homeBase.y);
+        const homeTileHeight = this.getTileHeight(this.homeBase.x, this.homeBase.y);
+        const homeScreen = this.toScreen(this.homeBase.x, this.homeBase.y, homeTileHeight);
         renderQueue.push({
             type: 'homebase',
             screen: homeScreen,
@@ -426,7 +692,8 @@ class Game {
         });
 
         // Add player to render queue
-        const playerScreen = this.toScreen(this.player.x, this.player.y);
+        const playerTileHeight = this.getTileHeight(this.player.x, this.player.y);
+        const playerScreen = this.toScreen(this.player.x, this.player.y, playerTileHeight + this.player.altitude);
         renderQueue.push({
             type: 'player',
             screen: playerScreen,
@@ -435,7 +702,8 @@ class Game {
 
         // Add projectiles to render queue
         for (let proj of this.projectiles) {
-            const screen = this.toScreen(proj.x, proj.y);
+            const projTileHeight = this.getTileHeight(proj.x, proj.y);
+            const screen = this.toScreen(proj.x, proj.y, projTileHeight);
             renderQueue.push({
                 type: 'projectile',
                 projectile: proj,
@@ -446,7 +714,8 @@ class Game {
 
         // Add particles to render queue
         for (let p of this.particles) {
-            const screen = this.toScreen(p.x, p.y);
+            const particleTileHeight = this.getTileHeight(p.x, p.y);
+            const screen = this.toScreen(p.x, p.y, particleTileHeight);
             renderQueue.push({
                 type: 'particle',
                 particle: p,
@@ -463,6 +732,9 @@ class Game {
             switch (obj.type) {
                 case 'tile':
                     this.renderTile(obj.tile, obj.screen);
+                    break;
+                case 'palmtree':
+                    this.renderPalmTree(obj.tree, obj.screen);
                     break;
                 case 'building':
                     this.renderBuilding(obj.building, obj.screen);
@@ -483,11 +755,23 @@ class Game {
         }
     }
 
+    getTileHeight(x, y) {
+        const tx = Math.floor(x);
+        const ty = Math.floor(y);
+
+        if (ty < 0 || ty >= this.mapHeight || tx < 0 || tx >= this.mapWidth) {
+            return 0;
+        }
+
+        return this.map[ty][tx].height || 0;
+    }
+
     renderTile(tile, screen) {
         // Draw isometric tile
         const hw = this.tileWidth / 2;
         const hh = this.tileHeight / 2;
 
+        // Draw tile top
         this.ctx.beginPath();
         this.ctx.moveTo(screen.x, screen.y - hh);
         this.ctx.lineTo(screen.x + hw, screen.y);
@@ -501,12 +785,57 @@ class Game {
             this.ctx.strokeStyle = '#1a3a1a';
             this.ctx.lineWidth = 1;
             this.ctx.stroke();
+        } else if (tile.type === 'sand') {
+            this.ctx.fillStyle = '#c2b280';
+            this.ctx.fill();
+            this.ctx.strokeStyle = '#a89968';
+            this.ctx.lineWidth = 1;
+            this.ctx.stroke();
         } else {
             this.ctx.fillStyle = '#0a2a5a';
             this.ctx.fill();
             this.ctx.strokeStyle = '#0a1a3a';
             this.ctx.lineWidth = 1;
             this.ctx.stroke();
+        }
+
+        // Draw 3D sides for elevated tiles
+        if (tile.height > 0) {
+            const depth = tile.height * 20;
+
+            // Left side
+            this.ctx.beginPath();
+            this.ctx.moveTo(screen.x - hw, screen.y);
+            this.ctx.lineTo(screen.x - hw, screen.y + depth);
+            this.ctx.lineTo(screen.x, screen.y + hh + depth);
+            this.ctx.lineTo(screen.x, screen.y + hh);
+            this.ctx.closePath();
+
+            if (tile.type === 'grass') {
+                this.ctx.fillStyle = '#1a3a1a';
+            } else if (tile.type === 'sand') {
+                this.ctx.fillStyle = '#a89968';
+            } else {
+                this.ctx.fillStyle = '#0a1a3a';
+            }
+            this.ctx.fill();
+
+            // Right side
+            this.ctx.beginPath();
+            this.ctx.moveTo(screen.x + hw, screen.y);
+            this.ctx.lineTo(screen.x + hw, screen.y + depth);
+            this.ctx.lineTo(screen.x, screen.y + hh + depth);
+            this.ctx.lineTo(screen.x, screen.y + hh);
+            this.ctx.closePath();
+
+            if (tile.type === 'grass') {
+                this.ctx.fillStyle = '#0f2a0f';
+            } else if (tile.type === 'sand') {
+                this.ctx.fillStyle = '#968850';
+            } else {
+                this.ctx.fillStyle = '#081a2a';
+            }
+            this.ctx.fill();
         }
     }
 
@@ -591,21 +920,100 @@ class Game {
         this.ctx.save();
         this.ctx.translate(screen.x, screen.y);
 
-        // Draw vehicle body (simplified hummer)
-        this.ctx.fillStyle = '#4a4a2a';
-        this.ctx.fillRect(-15, -10, 30, 20);
+        // Draw shadow if flying
+        if (this.player.altitude > 0) {
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            this.ctx.beginPath();
+            const shadowSize = 20 + this.player.altitude * 5;
+            this.ctx.ellipse(0, this.player.altitude * 20, shadowSize, shadowSize / 2, 0, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
 
-        // Draw cabin
-        this.ctx.fillStyle = '#2a2a1a';
-        this.ctx.fillRect(-10, -6, 20, 12);
+        // Render based on vehicle type
+        if (this.player.vehicleType === 'tank') {
+            // Draw tank
+            this.ctx.fillStyle = '#4a5a4a';
+            this.ctx.fillRect(-18, -12, 36, 24);
 
-        // Draw direction indicator
-        this.ctx.strokeStyle = '#0f0';
-        this.ctx.lineWidth = 2;
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, 0);
-        this.ctx.lineTo(Math.cos(this.player.angle) * 20, Math.sin(this.player.angle) * 20);
-        this.ctx.stroke();
+            // Draw turret
+            this.ctx.fillStyle = '#5a6a5a';
+            this.ctx.beginPath();
+            this.ctx.arc(0, 0, 10, 0, Math.PI * 2);
+            this.ctx.fill();
+
+            // Draw cannon
+            this.ctx.strokeStyle = '#3a4a3a';
+            this.ctx.lineWidth = 4;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, 0);
+            this.ctx.lineTo(Math.cos(this.player.angle) * 25, Math.sin(this.player.angle) * 25);
+            this.ctx.stroke();
+
+            // Draw tracks
+            this.ctx.fillStyle = '#2a3a2a';
+            this.ctx.fillRect(-18, -14, 36, 3);
+            this.ctx.fillRect(-18, 11, 36, 3);
+
+        } else if (this.player.vehicleType === 'hummer') {
+            // Draw hummer body
+            this.ctx.fillStyle = '#4a4a2a';
+            this.ctx.fillRect(-15, -10, 30, 20);
+
+            // Draw cabin
+            this.ctx.fillStyle = '#2a2a1a';
+            this.ctx.fillRect(-10, -6, 20, 12);
+
+            // Draw wheels
+            this.ctx.fillStyle = '#1a1a1a';
+            this.ctx.beginPath();
+            this.ctx.arc(-10, -10, 3, 0, Math.PI * 2);
+            this.ctx.arc(10, -10, 3, 0, Math.PI * 2);
+            this.ctx.arc(-10, 10, 3, 0, Math.PI * 2);
+            this.ctx.arc(10, 10, 3, 0, Math.PI * 2);
+            this.ctx.fill();
+
+            // Draw direction indicator
+            this.ctx.strokeStyle = '#0f0';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, 0);
+            this.ctx.lineTo(Math.cos(this.player.angle) * 20, Math.sin(this.player.angle) * 20);
+            this.ctx.stroke();
+
+        } else if (this.player.vehicleType === 'helicopter') {
+            // Draw helicopter body
+            this.ctx.fillStyle = '#3a3a5a';
+            this.ctx.fillRect(-12, -8, 24, 16);
+
+            // Draw cockpit
+            this.ctx.fillStyle = '#1a1a3a';
+            this.ctx.fillRect(-8, -6, 16, 12);
+
+            // Draw tail
+            this.ctx.fillStyle = '#3a3a5a';
+            this.ctx.fillRect(12, -2, 15, 4);
+
+            // Draw main rotor (spinning)
+            this.ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+            this.ctx.lineWidth = 2;
+            const rotorAngle = Date.now() * 0.05;
+            this.ctx.beginPath();
+            this.ctx.moveTo(Math.cos(rotorAngle) * 25, Math.sin(rotorAngle) * 25);
+            this.ctx.lineTo(Math.cos(rotorAngle + Math.PI) * 25, Math.sin(rotorAngle + Math.PI) * 25);
+            this.ctx.stroke();
+            this.ctx.beginPath();
+            this.ctx.moveTo(Math.cos(rotorAngle + Math.PI/2) * 25, Math.sin(rotorAngle + Math.PI/2) * 25);
+            this.ctx.lineTo(Math.cos(rotorAngle + Math.PI*1.5) * 25, Math.sin(rotorAngle + Math.PI*1.5) * 25);
+            this.ctx.stroke();
+
+            // Draw tail rotor
+            this.ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
+            this.ctx.moveTo(27, -5);
+            this.ctx.lineTo(27, 5);
+            this.ctx.stroke();
+        }
 
         // Draw flag if carrying
         if (this.player.hasFlag) {
@@ -616,6 +1024,174 @@ class Game {
         }
 
         this.ctx.restore();
+    }
+
+    renderPalmTree(tree, screen) {
+        this.ctx.save();
+        this.ctx.translate(screen.x, screen.y);
+
+        if (tree.destroyed && tree.leanDirection === -1) {
+            // Fully fallen tree - draw as log
+            this.ctx.fillStyle = '#6b4423';
+            this.ctx.fillRect(-tree.height * 10, -3, tree.height * 20, 6);
+        } else {
+            // Apply lean if falling
+            if (tree.leanDirection > 0) {
+                this.ctx.rotate(tree.leanDirection);
+            }
+
+            // Draw trunk
+            const trunkHeight = tree.height * 20;
+            this.ctx.fillStyle = tree.burning ? '#8b3413' : '#6b4423';
+            this.ctx.fillRect(-3, -trunkHeight, 6, trunkHeight);
+
+            // Draw palm fronds (polygonal)
+            if (!tree.destroyed) {
+                const frondColor = tree.burning ? '#fa4' : '#2a5a2a';
+                this.ctx.fillStyle = frondColor;
+
+                // Draw 6 fronds in a star pattern
+                for (let i = 0; i < 6; i++) {
+                    const angle = (i / 6) * Math.PI * 2;
+                    const length = 15;
+
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, -trunkHeight);
+                    this.ctx.lineTo(
+                        Math.cos(angle) * length,
+                        -trunkHeight + Math.sin(angle) * length
+                    );
+                    this.ctx.lineTo(
+                        Math.cos(angle) * length * 0.5,
+                        -trunkHeight + Math.sin(angle) * length * 0.5 - 5
+                    );
+                    this.ctx.closePath();
+                    this.ctx.fill();
+                }
+
+                // Draw coconuts
+                this.ctx.fillStyle = '#8b6423';
+                for (let i = 0; i < 3; i++) {
+                    const cAngle = (i / 3) * Math.PI * 2;
+                    this.ctx.beginPath();
+                    this.ctx.arc(
+                        Math.cos(cAngle) * 5,
+                        -trunkHeight + Math.sin(cAngle) * 5,
+                        3, 0, Math.PI * 2
+                    );
+                    this.ctx.fill();
+                }
+            }
+
+            // Draw fire particles if burning
+            if (tree.burning) {
+                for (let i = 0; i < 5; i++) {
+                    this.ctx.fillStyle = Math.random() > 0.5 ? '#f60' : '#f80';
+                    this.ctx.beginPath();
+                    this.ctx.arc(
+                        (Math.random() - 0.5) * 10,
+                        -trunkHeight - Math.random() * 10,
+                        2 + Math.random() * 2,
+                        0, Math.PI * 2
+                    );
+                    this.ctx.fill();
+                }
+            }
+        }
+
+        this.ctx.restore();
+    }
+
+    renderVehicleSelection() {
+        this.ctx.fillStyle = '#0f0';
+        this.ctx.font = 'bold 48px monospace';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('SELECT YOUR VEHICLE', this.canvas.width / 2, 100);
+
+        this.ctx.font = '20px monospace';
+        this.ctx.fillText('Click on a vehicle to begin', this.canvas.width / 2, 140);
+
+        const centerY = this.canvas.height / 2;
+        const spacing = 300;
+
+        // Draw Tank
+        this.drawVehicleOption('tank', this.canvas.width / 2 - spacing, centerY);
+
+        // Draw Hummer
+        this.drawVehicleOption('hummer', this.canvas.width / 2, centerY);
+
+        // Draw Helicopter
+        this.drawVehicleOption('helicopter', this.canvas.width / 2 + spacing, centerY);
+    }
+
+    drawVehicleOption(type, x, y) {
+        this.ctx.save();
+        this.ctx.translate(x, y);
+
+        // Draw selection circle
+        this.ctx.strokeStyle = '#0f0';
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.arc(0, 0, 70, 0, Math.PI * 2);
+        this.ctx.stroke();
+
+        // Draw vehicle preview
+        const scale = 1.5;
+        this.ctx.scale(scale, scale);
+
+        if (type === 'tank') {
+            this.ctx.fillStyle = '#4a5a4a';
+            this.ctx.fillRect(-18, -12, 36, 24);
+            this.ctx.fillStyle = '#5a6a5a';
+            this.ctx.beginPath();
+            this.ctx.arc(0, 0, 10, 0, Math.PI * 2);
+            this.ctx.fill();
+            this.ctx.strokeStyle = '#3a4a3a';
+            this.ctx.lineWidth = 4;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, 0);
+            this.ctx.lineTo(25, 0);
+            this.ctx.stroke();
+        } else if (type === 'hummer') {
+            this.ctx.fillStyle = '#4a4a2a';
+            this.ctx.fillRect(-15, -10, 30, 20);
+            this.ctx.fillStyle = '#2a2a1a';
+            this.ctx.fillRect(-10, -6, 20, 12);
+            this.ctx.fillStyle = '#1a1a1a';
+            this.ctx.beginPath();
+            this.ctx.arc(-10, -10, 3, 0, Math.PI * 2);
+            this.ctx.arc(10, -10, 3, 0, Math.PI * 2);
+            this.ctx.arc(-10, 10, 3, 0, Math.PI * 2);
+            this.ctx.arc(10, 10, 3, 0, Math.PI * 2);
+            this.ctx.fill();
+        } else if (type === 'helicopter') {
+            this.ctx.fillStyle = '#3a3a5a';
+            this.ctx.fillRect(-12, -8, 24, 16);
+            this.ctx.fillStyle = '#1a1a3a';
+            this.ctx.fillRect(-8, -6, 16, 12);
+            this.ctx.fillRect(12, -2, 15, 4);
+            this.ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(-25, 0);
+            this.ctx.lineTo(25, 0);
+            this.ctx.stroke();
+        }
+
+        this.ctx.restore();
+
+        // Draw vehicle name
+        this.ctx.fillStyle = '#0f0';
+        this.ctx.font = 'bold 20px monospace';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(this.vehicleTypes[type].name.toUpperCase(), x, y + 100);
+
+        // Draw vehicle stats
+        this.ctx.font = '14px monospace';
+        const stats = this.vehicleTypes[type];
+        this.ctx.fillText(`Speed: ${Math.round(stats.maxSpeed * 100)}`, x, y + 125);
+        this.ctx.fillText(`Fire Rate: ${Math.round(100 / stats.fireRate)}`, x, y + 145);
+        this.ctx.fillText(`Damage: ${stats.damage}`, x, y + 165);
     }
 
     renderProjectile(proj, screen) {
@@ -638,7 +1214,7 @@ class Game {
         const deltaTime = currentTime - this.lastTime;
         this.lastTime = currentTime;
 
-        if (!this.gameWon) {
+        if (this.gameStarted && !this.gameWon) {
             this.update(deltaTime);
         }
         this.render();
