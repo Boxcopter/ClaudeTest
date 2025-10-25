@@ -168,6 +168,10 @@ class Game {
             canFly: vehicle.canFly,
             altitude: 0,
             targetAltitude: 0,
+            // Tank-specific properties
+            turretAngle: 0,
+            // Helicopter-specific properties
+            isLanded: true,
             weapon: {
                 cooldown: 0,
                 maxCooldown: vehicle.fireRate,
@@ -284,17 +288,17 @@ class Game {
                 this.fireWeapon();
             }
 
-            // Interact with buildings
-            if (e.key.toLowerCase() === 'e') {
+            // Interact with buildings (or switch vehicles at home base)
+            if (e.key.toLowerCase() === 'f') {
                 this.interact();
             }
 
             // Helicopter altitude control
-            if (this.player && this.player.canFly) {
-                if (e.key.toLowerCase() === 'q') {
+            if (this.player && this.player.vehicleType === 'helicopter') {
+                if (e.key.toLowerCase() === 'z') {
                     this.player.targetAltitude = Math.max(0, this.player.targetAltitude - 1);
                 }
-                if (e.key.toLowerCase() === 'z') {
+                if (e.key.toLowerCase() === 'x') {
                     this.player.targetAltitude = Math.min(3, this.player.targetAltitude + 1);
                 }
             }
@@ -306,36 +310,71 @@ class Game {
     }
 
     interact() {
-        // Check for nearby destroyed buildings with flag
-        for (let building of this.buildings) {
-            if (building.destroyed && building.hasFlag && !this.flagCaptured) {
-                const dist = Math.sqrt(
-                    Math.pow(this.player.x - building.x, 2) +
-                    Math.pow(this.player.y - building.y, 2)
-                );
+        // Check if at home base for vehicle switching
+        const distToBase = Math.sqrt(
+            Math.pow(this.player.x - this.homeBase.x, 2) +
+            Math.pow(this.player.y - this.homeBase.y, 2)
+        );
 
-                if (dist < 2) {
-                    this.player.hasFlag = true;
-                    this.flagCaptured = true;
-                    this.updateUI();
-                    this.createParticles(building.x, building.y, '#ff0', 20);
-                    return;
+        if (distToBase < this.homeBase.radius) {
+            // Check if delivering flag
+            if (this.player.hasFlag) {
+                this.gameWon = true;
+                this.updateUI();
+                return;
+            }
+
+            // Show vehicle selection menu
+            this.showVehicleSwitch();
+            return;
+        }
+
+        // Helicopter must be landed to interact with buildings
+        if (this.player.vehicleType === 'helicopter' && !this.player.isLanded) {
+            return;
+        }
+
+        // Check for nearby destroyed buildings with flag (Hummer only)
+        if (this.player.vehicleType === 'hummer') {
+            for (let building of this.buildings) {
+                if (building.destroyed && building.hasFlag && !this.flagCaptured) {
+                    const dist = Math.sqrt(
+                        Math.pow(this.player.x - building.x, 2) +
+                        Math.pow(this.player.y - building.y, 2)
+                    );
+
+                    if (dist < 2) {
+                        this.player.hasFlag = true;
+                        this.flagCaptured = true;
+                        this.updateUI();
+                        this.createParticles(building.x, building.y, '#ff0', 20);
+                        return;
+                    }
                 }
             }
         }
+    }
 
-        // Check if at home base with flag
-        if (this.player.hasFlag) {
-            const dist = Math.sqrt(
-                Math.pow(this.player.x - this.homeBase.x, 2) +
-                Math.pow(this.player.y - this.homeBase.y, 2)
-            );
+    showVehicleSwitch() {
+        // Store current state
+        const hasFlag = this.player.hasFlag;
+        const currentX = this.player.x;
+        const currentY = this.player.y;
 
-            if (dist < this.homeBase.radius) {
-                this.gameWon = true;
-                this.updateUI();
-            }
-        }
+        // Simple vehicle switching - cycle through vehicles
+        const vehicles = ['hummer', 'tank', 'helicopter'];
+        const currentIndex = vehicles.indexOf(this.player.vehicleType);
+        const nextIndex = (currentIndex + 1) % vehicles.length;
+        const nextVehicle = vehicles[nextIndex];
+
+        // Switch to next vehicle
+        this.initPlayer(nextVehicle);
+        this.player.x = currentX;
+        this.player.y = currentY;
+        this.player.hasFlag = hasFlag;
+
+        // Show message
+        this.createParticles(this.player.x, this.player.y, '#0f0', 30);
     }
 
     fireWeapon() {
@@ -343,53 +382,60 @@ class Game {
 
         this.player.weapon.cooldown = this.player.weapon.maxCooldown;
 
+        let fireAngle = this.player.angle;
+        let startX = this.player.x;
+        let startY = this.player.y;
+
+        // Tank fires from turret angle
+        if (this.player.vehicleType === 'tank') {
+            fireAngle = this.player.turretAngle;
+        }
+
+        // Helicopter fires at a downward angle
+        const isHelicopterAirborne = this.player.vehicleType === 'helicopter' && this.player.altitude > 0.5;
+
         // Create projectile
         const projectile = {
-            x: this.player.x,
-            y: this.player.y,
-            vx: Math.cos(this.player.angle) * this.player.weapon.projectileSpeed,
-            vy: Math.sin(this.player.angle) * this.player.weapon.projectileSpeed,
+            x: startX,
+            y: startY,
+            vx: Math.cos(fireAngle) * this.player.weapon.projectileSpeed,
+            vy: Math.sin(fireAngle) * this.player.weapon.projectileSpeed,
             life: 60,
-            damage: this.player.weapon.damage
+            damage: this.player.weapon.damage,
+            altitude: isHelicopterAirborne ? this.player.altitude : 0,
+            dropRate: isHelicopterAirborne ? 0.05 : 0 // Projectiles fall when fired from helicopter
         };
 
         this.projectiles.push(projectile);
     }
 
-    update(deltaTime) {
-        // Update weapon cooldown
-        if (this.player.weapon.cooldown > 0) {
-            this.player.weapon.cooldown--;
+    updateHummer() {
+        // Arcade car controls
+        let acceleration = 0;
+        let steering = 0;
+
+        if (this.keys['w'] || this.keys['arrowup']) acceleration = 1;
+        if (this.keys['s'] || this.keys['arrowdown']) acceleration = -1;
+        if (this.keys['a'] || this.keys['arrowleft']) steering = -1;
+        if (this.keys['d'] || this.keys['arrowright']) steering = 1;
+
+        // Apply acceleration in current direction
+        if (acceleration !== 0) {
+            this.player.vx += Math.cos(this.player.angle) * this.player.speed * acceleration;
+            this.player.vy += Math.sin(this.player.angle) * this.player.speed * acceleration;
         }
 
-        // Update helicopter altitude
-        if (this.player.canFly) {
-            if (this.player.altitude < this.player.targetAltitude) {
-                this.player.altitude += 0.05;
-            } else if (this.player.altitude > this.player.targetAltitude) {
-                this.player.altitude -= 0.05;
-            }
-        }
-
-        // Player movement
-        let moveX = 0;
-        let moveY = 0;
-
-        if (this.keys['w'] || this.keys['arrowup']) moveY -= 1;
-        if (this.keys['s'] || this.keys['arrowdown']) moveY += 1;
-        if (this.keys['a'] || this.keys['arrowleft']) moveX -= 1;
-        if (this.keys['d'] || this.keys['arrowright']) moveX += 1;
-
-        // Calculate angle based on movement
-        if (moveX !== 0 || moveY !== 0) {
-            this.player.angle = Math.atan2(moveY, moveX);
-            this.player.vx += Math.cos(this.player.angle) * this.player.speed;
-            this.player.vy += Math.sin(this.player.angle) * this.player.speed;
+        // Apply steering when moving
+        const currentSpeed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
+        if (currentSpeed > 0.02 && steering !== 0) {
+            // Steering is more responsive at higher speeds
+            const steeringFactor = Math.min(currentSpeed / this.player.maxSpeed, 1) * 0.08;
+            this.player.angle += steering * steeringFactor;
         }
 
         // Apply friction
-        this.player.vx *= this.player.friction;
-        this.player.vy *= this.player.friction;
+        this.player.vx *= 0.92;
+        this.player.vy *= 0.92;
 
         // Limit max speed
         const speed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
@@ -402,36 +448,176 @@ class Game {
         const newX = this.player.x + this.player.vx;
         const newY = this.player.y + this.player.vy;
 
-        // Check if new position is on land (or flying)
-        if (this.player.canFly && this.player.altitude > 0.5) {
-            // Helicopter can fly over water
+        if (this.isOnLand(newX, newY)) {
+            this.player.x = newX;
+            this.player.y = newY;
+
+            // Check collision with palm trees
+            for (let tree of this.palmTrees) {
+                if (!tree.destroyed) {
+                    const dist = Math.sqrt(
+                        Math.pow(this.player.x - tree.x, 2) +
+                        Math.pow(this.player.y - tree.y, 2)
+                    );
+
+                    if (dist < 0.5) {
+                        tree.destroyed = true;
+                        tree.leanAngle = this.player.angle;
+                        tree.leanDirection = 1;
+                        this.createParticles(tree.x, tree.y, '#8b4513', 15);
+                    }
+                }
+            }
+        } else {
+            this.player.vx *= 0.3;
+            this.player.vy *= 0.3;
+        }
+    }
+
+    updateTank() {
+        // Tank controls: WASD for movement, Q/E for turret
+        let forward = 0;
+        let rotation = 0;
+
+        if (this.keys['w'] || this.keys['arrowup']) forward = 1;
+        if (this.keys['s'] || this.keys['arrowdown']) forward = -1;
+        if (this.keys['a'] || this.keys['arrowleft']) rotation = -0.04;
+        if (this.keys['d'] || this.keys['arrowright']) rotation = 0.04;
+
+        // Rotate tank body
+        this.player.angle += rotation;
+
+        // Move forward/backward
+        if (forward !== 0) {
+            this.player.vx += Math.cos(this.player.angle) * this.player.speed * forward;
+            this.player.vy += Math.sin(this.player.angle) * this.player.speed * forward;
+        }
+
+        // Rotate turret independently
+        if (this.keys['q']) {
+            this.player.turretAngle -= 0.05;
+        }
+        if (this.keys['e']) {
+            this.player.turretAngle += 0.05;
+        }
+
+        // Apply friction
+        this.player.vx *= 0.9;
+        this.player.vy *= 0.9;
+
+        // Limit max speed
+        const speed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
+        if (speed > this.player.maxSpeed) {
+            this.player.vx = (this.player.vx / speed) * this.player.maxSpeed;
+            this.player.vy = (this.player.vy / speed) * this.player.maxSpeed;
+        }
+
+        // Update position
+        const newX = this.player.x + this.player.vx;
+        const newY = this.player.y + this.player.vy;
+
+        if (this.isOnLand(newX, newY)) {
+            this.player.x = newX;
+            this.player.y = newY;
+
+            // Check collision with palm trees
+            for (let tree of this.palmTrees) {
+                if (!tree.destroyed) {
+                    const dist = Math.sqrt(
+                        Math.pow(this.player.x - tree.x, 2) +
+                        Math.pow(this.player.y - tree.y, 2)
+                    );
+
+                    if (dist < 0.5) {
+                        tree.destroyed = true;
+                        tree.leanAngle = this.player.angle;
+                        tree.leanDirection = 1;
+                        this.createParticles(tree.x, tree.y, '#8b4513', 15);
+                    }
+                }
+            }
+        } else {
+            this.player.vx *= 0.3;
+            this.player.vy *= 0.3;
+        }
+    }
+
+    updateHelicopter() {
+        // Update altitude
+        if (this.player.altitude < this.player.targetAltitude) {
+            this.player.altitude += 0.05;
+        } else if (this.player.altitude > this.player.targetAltitude) {
+            this.player.altitude -= 0.05;
+        }
+
+        // Update landed status
+        this.player.isLanded = this.player.altitude < 0.3;
+
+        // Helicopter controls: WASD for movement, Q/E for strafing
+        let moveX = 0;
+        let moveY = 0;
+
+        if (this.keys['w'] || this.keys['arrowup']) moveY -= 1;
+        if (this.keys['s'] || this.keys['arrowdown']) moveY += 1;
+
+        // Q and E for strafing when airborne
+        if (this.player.altitude > 0.3) {
+            if (this.keys['q']) moveX -= 1;
+            if (this.keys['e']) moveX += 1;
+        } else {
+            // Use A/D for rotation when landed
+            if (this.keys['a'] || this.keys['arrowleft']) moveX -= 1;
+            if (this.keys['d'] || this.keys['arrowright']) moveX += 1;
+        }
+
+        // Calculate angle and movement based on input
+        if (moveX !== 0 || moveY !== 0) {
+            this.player.angle = Math.atan2(moveY, moveX);
+            this.player.vx += Math.cos(this.player.angle) * this.player.speed;
+            this.player.vy += Math.sin(this.player.angle) * this.player.speed;
+        }
+
+        // Apply friction
+        this.player.vx *= 0.94;
+        this.player.vy *= 0.94;
+
+        // Limit max speed
+        const speed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
+        if (speed > this.player.maxSpeed) {
+            this.player.vx = (this.player.vx / speed) * this.player.maxSpeed;
+            this.player.vy = (this.player.vy / speed) * this.player.maxSpeed;
+        }
+
+        // Update position
+        const newX = this.player.x + this.player.vx;
+        const newY = this.player.y + this.player.vy;
+
+        // Helicopter can fly over water when airborne
+        if (this.player.altitude > 0.5) {
             this.player.x = newX;
             this.player.y = newY;
         } else if (this.isOnLand(newX, newY)) {
             this.player.x = newX;
             this.player.y = newY;
-
-            // Check collision with palm trees (run over)
-            if (!this.player.canFly || this.player.altitude < 0.5) {
-                for (let tree of this.palmTrees) {
-                    if (!tree.destroyed) {
-                        const dist = Math.sqrt(
-                            Math.pow(this.player.x - tree.x, 2) +
-                            Math.pow(this.player.y - tree.y, 2)
-                        );
-
-                        if (dist < 0.5) {
-                            tree.destroyed = true;
-                            tree.leanAngle = this.player.angle;
-                            tree.leanDirection = 1;
-                            this.createParticles(tree.x, tree.y, '#8b4513', 15);
-                        }
-                    }
-                }
-            }
         } else {
             this.player.vx *= 0.5;
             this.player.vy *= 0.5;
+        }
+    }
+
+    update(deltaTime) {
+        // Update weapon cooldown
+        if (this.player.weapon.cooldown > 0) {
+            this.player.weapon.cooldown--;
+        }
+
+        // Vehicle-specific movement and controls
+        if (this.player.vehicleType === 'hummer') {
+            this.updateHummer();
+        } else if (this.player.vehicleType === 'tank') {
+            this.updateTank();
+        } else if (this.player.vehicleType === 'helicopter') {
+            this.updateHelicopter();
         }
 
         // Keep player in bounds
@@ -449,53 +635,63 @@ class Game {
             proj.y += proj.vy;
             proj.life--;
 
-            let hitSomething = false;
-
-            // Check collision with buildings
-            for (let building of this.buildings) {
-                if (!building.destroyed) {
-                    const dist = Math.sqrt(
-                        Math.pow(proj.x - building.x, 2) +
-                        Math.pow(proj.y - building.y, 2)
-                    );
-
-                    if (dist < building.width / 2) {
-                        building.hp -= proj.damage;
-                        this.createParticles(building.x, building.y, '#f80', 10);
-
-                        if (building.hp <= 0) {
-                            building.destroyed = true;
-                            this.destroyedCount++;
-                            this.createParticles(building.x, building.y, '#f00', 30);
-
-                            if (building.hasFlag) {
-                                this.flagRevealed = true;
-                            }
-
-                            this.updateUI();
-                        }
-
-                        hitSomething = true;
-                        break;
-                    }
-                }
+            // Handle altitude for helicopter projectiles
+            if (proj.altitude !== undefined && proj.altitude > 0) {
+                proj.altitude -= proj.dropRate;
             }
 
-            // Check collision with palm trees
-            if (!hitSomething) {
-                for (let tree of this.palmTrees) {
-                    if (!tree.destroyed && !tree.burning) {
+            let hitSomething = false;
+
+            // Only check collisions if projectile is at ground level
+            const atGroundLevel = !proj.altitude || proj.altitude <= 0.1;
+
+            if (atGroundLevel) {
+                // Check collision with buildings
+                for (let building of this.buildings) {
+                    if (!building.destroyed) {
                         const dist = Math.sqrt(
-                            Math.pow(proj.x - tree.x, 2) +
-                            Math.pow(proj.y - tree.y, 2)
+                            Math.pow(proj.x - building.x, 2) +
+                            Math.pow(proj.y - building.y, 2)
                         );
 
-                        if (dist < 0.4) {
-                            tree.burning = true;
-                            tree.burnTime = 100;
-                            this.createParticles(tree.x, tree.y, '#f80', 15);
+                        if (dist < building.width / 2) {
+                            building.hp -= proj.damage;
+                            this.createParticles(building.x, building.y, '#f80', 10);
+
+                            if (building.hp <= 0) {
+                                building.destroyed = true;
+                                this.destroyedCount++;
+                                this.createParticles(building.x, building.y, '#f00', 30);
+
+                                if (building.hasFlag) {
+                                    this.flagRevealed = true;
+                                }
+
+                                this.updateUI();
+                            }
+
                             hitSomething = true;
                             break;
+                        }
+                    }
+                }
+
+                // Check collision with palm trees
+                if (!hitSomething) {
+                    for (let tree of this.palmTrees) {
+                        if (!tree.destroyed && !tree.burning) {
+                            const dist = Math.sqrt(
+                                Math.pow(proj.x - tree.x, 2) +
+                                Math.pow(proj.y - tree.y, 2)
+                            );
+
+                            if (dist < 0.4) {
+                                tree.burning = true;
+                                tree.burnTime = 100;
+                                this.createParticles(tree.x, tree.y, '#f80', 15);
+                                hitSomething = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -507,8 +703,8 @@ class Game {
                 continue;
             }
 
-            // Remove old projectiles
-            if (proj.life <= 0 || (!this.player.canFly && !this.isOnLand(proj.x, proj.y))) {
+            // Remove old projectiles or those out of bounds
+            if (proj.life <= 0 || !this.isOnLand(proj.x, proj.y)) {
                 this.projectiles.splice(i, 1);
             }
         }
@@ -586,7 +782,50 @@ class Game {
     }
 
     updateUI() {
+        if (!this.player) return;
+
         document.getElementById('destroyed-count').textContent = this.destroyedCount;
+
+        // Update vehicle name
+        const vehicleName = this.vehicleTypes[this.player.vehicleType].name;
+        document.getElementById('vehicle-name').textContent = vehicleName;
+
+        // Update vehicle-specific controls
+        let controlsHTML = '';
+        if (this.player.vehicleType === 'hummer') {
+            controlsHTML = `
+                <p>W/S - Accelerate / Brake</p>
+                <p>A/D - Steer left / right</p>
+                <p>Space - Fire weapon</p>
+                <p>F - Pickup flag / Switch vehicle at base</p>
+            `;
+        } else if (this.player.vehicleType === 'tank') {
+            controlsHTML = `
+                <p>W/S - Move forward / back</p>
+                <p>A/D - Rotate hull</p>
+                <p>Q/E - Rotate turret</p>
+                <p>Space - Fire weapon</p>
+                <p>F - Switch vehicle at base</p>
+            `;
+        } else if (this.player.vehicleType === 'helicopter') {
+            controlsHTML = `
+                <p>WASD - Move / Fly</p>
+                <p>Q/E - Strafe left / right (when airborne)</p>
+                <p>Z/X - Decrease / Increase altitude</p>
+                <p>Space - Fire weapon</p>
+                <p>F - Switch vehicle at base</p>
+            `;
+        }
+        document.getElementById('vehicle-controls').innerHTML = controlsHTML;
+
+        // Show altitude for helicopter
+        const altitudeDisplay = document.getElementById('altitude-display');
+        if (this.player.vehicleType === 'helicopter') {
+            altitudeDisplay.style.display = 'block';
+            document.getElementById('altitude-value').textContent = Math.round(this.player.altitude * 10) / 10;
+        } else {
+            altitudeDisplay.style.display = 'none';
+        }
 
         let flagStatus = 'Hidden';
         if (this.gameWon) {
@@ -597,7 +836,7 @@ class Game {
             flagStatus = 'CAPTURED - Return to base!';
             document.getElementById('mission-status').textContent = 'Return the flag to your base!';
         } else if (this.flagRevealed) {
-            flagStatus = 'Located - Press E to capture';
+            flagStatus = 'Located - Press F to capture (Hummer only)';
         }
 
         document.getElementById('flag-status').textContent = flagStatus;
@@ -703,7 +942,8 @@ class Game {
         // Add projectiles to render queue
         for (let proj of this.projectiles) {
             const projTileHeight = this.getTileHeight(proj.x, proj.y);
-            const screen = this.toScreen(proj.x, proj.y, projTileHeight);
+            const projAltitude = proj.altitude !== undefined ? proj.altitude : 0;
+            const screen = this.toScreen(proj.x, proj.y, projTileHeight + projAltitude);
             renderQueue.push({
                 type: 'projectile',
                 projectile: proj,
@@ -931,9 +1171,21 @@ class Game {
 
         // Render based on vehicle type
         if (this.player.vehicleType === 'tank') {
-            // Draw tank
+            // Rotate for tank body
+            this.ctx.rotate(this.player.angle);
+
+            // Draw tank body
             this.ctx.fillStyle = '#4a5a4a';
             this.ctx.fillRect(-18, -12, 36, 24);
+
+            // Draw tracks
+            this.ctx.fillStyle = '#2a3a2a';
+            this.ctx.fillRect(-18, -14, 36, 3);
+            this.ctx.fillRect(-18, 11, 36, 3);
+
+            // Reset rotation for turret
+            this.ctx.rotate(-this.player.angle);
+            this.ctx.rotate(this.player.turretAngle);
 
             // Draw turret
             this.ctx.fillStyle = '#5a6a5a';
@@ -941,20 +1193,18 @@ class Game {
             this.ctx.arc(0, 0, 10, 0, Math.PI * 2);
             this.ctx.fill();
 
-            // Draw cannon
+            // Draw cannon at turret angle
             this.ctx.strokeStyle = '#3a4a3a';
             this.ctx.lineWidth = 4;
             this.ctx.beginPath();
             this.ctx.moveTo(0, 0);
-            this.ctx.lineTo(Math.cos(this.player.angle) * 25, Math.sin(this.player.angle) * 25);
+            this.ctx.lineTo(25, 0);
             this.ctx.stroke();
 
-            // Draw tracks
-            this.ctx.fillStyle = '#2a3a2a';
-            this.ctx.fillRect(-18, -14, 36, 3);
-            this.ctx.fillRect(-18, 11, 36, 3);
-
         } else if (this.player.vehicleType === 'hummer') {
+            // Rotate for hummer orientation
+            this.ctx.rotate(this.player.angle);
+
             // Draw hummer body
             this.ctx.fillStyle = '#4a4a2a';
             this.ctx.fillRect(-15, -10, 30, 20);
@@ -972,15 +1222,18 @@ class Game {
             this.ctx.arc(10, 10, 3, 0, Math.PI * 2);
             this.ctx.fill();
 
-            // Draw direction indicator
+            // Draw direction indicator (forward)
             this.ctx.strokeStyle = '#0f0';
             this.ctx.lineWidth = 2;
             this.ctx.beginPath();
             this.ctx.moveTo(0, 0);
-            this.ctx.lineTo(Math.cos(this.player.angle) * 20, Math.sin(this.player.angle) * 20);
+            this.ctx.lineTo(20, 0);
             this.ctx.stroke();
 
         } else if (this.player.vehicleType === 'helicopter') {
+            // Rotate for helicopter orientation
+            this.ctx.rotate(this.player.angle);
+
             // Draw helicopter body
             this.ctx.fillStyle = '#3a3a5a';
             this.ctx.fillRect(-12, -8, 24, 16);
@@ -993,10 +1246,11 @@ class Game {
             this.ctx.fillStyle = '#3a3a5a';
             this.ctx.fillRect(12, -2, 15, 4);
 
-            // Draw main rotor (spinning)
-            this.ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+            // Draw main rotor (spinning) - speed based on altitude
+            const rotorSpeed = this.player.altitude > 0.3 ? 0.08 : 0.02;
+            this.ctx.strokeStyle = this.player.altitude > 0.3 ? 'rgba(100, 100, 100, 0.3)' : 'rgba(100, 100, 100, 0.5)';
             this.ctx.lineWidth = 2;
-            const rotorAngle = Date.now() * 0.05;
+            const rotorAngle = Date.now() * rotorSpeed;
             this.ctx.beginPath();
             this.ctx.moveTo(Math.cos(rotorAngle) * 25, Math.sin(rotorAngle) * 25);
             this.ctx.lineTo(Math.cos(rotorAngle + Math.PI) * 25, Math.sin(rotorAngle + Math.PI) * 25);
@@ -1216,6 +1470,7 @@ class Game {
 
         if (this.gameStarted && !this.gameWon) {
             this.update(deltaTime);
+            this.updateUI();
         }
         this.render();
 

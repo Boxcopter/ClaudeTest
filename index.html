@@ -13,15 +13,14 @@
                 <h1>RETURN FIRE</h1>
                 <div id="mission-status">Mission: Find and capture the flag</div>
                 <div id="controls">
-                    <p><strong>Controls:</strong></p>
-                    <p>WASD / Arrow Keys - Move</p>
-                    <p>Space - Fire weapon</p>
-                    <p>E - Enter building / Capture flag</p>
-                    <p>Q/Z - Helicopter altitude (up/down)</p>
+                    <p><strong>Vehicle:</strong> <span id="vehicle-name">-</span></p>
+                    <p id="controls-text"><strong>Controls:</strong></p>
+                    <div id="vehicle-controls"></div>
                 </div>
                 <div id="game-stats">
                     <p>Buildings Destroyed: <span id="destroyed-count">0</span></p>
                     <p>Flag Status: <span id="flag-status">Hidden</span></p>
+                    <p id="altitude-display" style="display:none;">Altitude: <span id="altitude-value">0</span></p>
                 </div>
             </div>
         </div>
