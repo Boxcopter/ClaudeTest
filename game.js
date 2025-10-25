@@ -47,8 +47,8 @@ class Game {
             },
             hummer: {
                 name: 'Hummer',
-                speed: 0.15,
-                maxSpeed: 0.3,
+                speed: 0.10,
+                maxSpeed: 0.20,
                 fireRate: 15,
                 projectileSpeed: 0.6,
                 damage: 1,
@@ -293,13 +293,15 @@ class Game {
                 this.interact();
             }
 
-            // Helicopter altitude control
+            // Helicopter takeoff/landing toggle
             if (this.player && this.player.vehicleType === 'helicopter') {
                 if (e.key.toLowerCase() === 'z') {
-                    this.player.targetAltitude = Math.max(0, this.player.targetAltitude - 1);
-                }
-                if (e.key.toLowerCase() === 'x') {
-                    this.player.targetAltitude = Math.min(3, this.player.targetAltitude + 1);
+                    // Toggle between landed (0) and flying (3)
+                    if (this.player.targetAltitude < 1.5) {
+                        this.player.targetAltitude = 3;
+                    } else {
+                        this.player.targetAltitude = 0;
+                    }
                 }
             }
         });
@@ -419,29 +421,32 @@ class Game {
         if (this.keys['a'] || this.keys['arrowleft']) steering = -1;
         if (this.keys['d'] || this.keys['arrowright']) steering = 1;
 
+        // Apply steering - can steer even when stopped
+        if (steering !== 0) {
+            this.player.angle += steering * 0.05;
+        }
+
         // Apply acceleration in current direction
         if (acceleration !== 0) {
             this.player.vx += Math.cos(this.player.angle) * this.player.speed * acceleration;
             this.player.vy += Math.sin(this.player.angle) * this.player.speed * acceleration;
         }
 
-        // Apply steering when moving
+        // Apply strong friction to prevent drifting
+        this.player.vx *= 0.85;
+        this.player.vy *= 0.85;
+
+        // Stop completely if moving very slowly
         const currentSpeed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
-        if (currentSpeed > 0.02 && steering !== 0) {
-            // Steering is more responsive at higher speeds
-            const steeringFactor = Math.min(currentSpeed / this.player.maxSpeed, 1) * 0.08;
-            this.player.angle += steering * steeringFactor;
+        if (currentSpeed < 0.01) {
+            this.player.vx = 0;
+            this.player.vy = 0;
         }
 
-        // Apply friction
-        this.player.vx *= 0.92;
-        this.player.vy *= 0.92;
-
         // Limit max speed
-        const speed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
-        if (speed > this.player.maxSpeed) {
-            this.player.vx = (this.player.vx / speed) * this.player.maxSpeed;
-            this.player.vy = (this.player.vy / speed) * this.player.maxSpeed;
+        if (currentSpeed > this.player.maxSpeed) {
+            this.player.vx = (this.player.vx / currentSpeed) * this.player.maxSpeed;
+            this.player.vy = (this.player.vy / currentSpeed) * this.player.maxSpeed;
         }
 
         // Update position
@@ -469,6 +474,7 @@ class Game {
                 }
             }
         } else {
+            // Hit water or edge - stop immediately
             this.player.vx *= 0.3;
             this.player.vy *= 0.3;
         }
@@ -553,36 +559,51 @@ class Game {
         // Update landed status
         this.player.isLanded = this.player.altitude < 0.3;
 
-        // Helicopter controls: WASD for movement, Q/E for strafing
-        let moveX = 0;
-        let moveY = 0;
+        // Only allow movement when airborne
+        if (!this.player.isLanded) {
+            // Helicopter controls when airborne: WASD for movement, Q/E for strafing
+            let moveX = 0;
+            let moveY = 0;
 
-        if (this.keys['w'] || this.keys['arrowup']) moveY -= 1;
-        if (this.keys['s'] || this.keys['arrowdown']) moveY += 1;
-
-        // Q and E for strafing when airborne
-        if (this.player.altitude > 0.3) {
+            if (this.keys['w'] || this.keys['arrowup']) moveY -= 1;
+            if (this.keys['s'] || this.keys['arrowdown']) moveY += 1;
             if (this.keys['q']) moveX -= 1;
             if (this.keys['e']) moveX += 1;
-        } else {
-            // Use A/D for rotation when landed
             if (this.keys['a'] || this.keys['arrowleft']) moveX -= 1;
             if (this.keys['d'] || this.keys['arrowright']) moveX += 1;
-        }
 
-        // Calculate angle and movement based on input
-        if (moveX !== 0 || moveY !== 0) {
-            this.player.angle = Math.atan2(moveY, moveX);
-            this.player.vx += Math.cos(this.player.angle) * this.player.speed;
-            this.player.vy += Math.sin(this.player.angle) * this.player.speed;
+            // Calculate angle and movement based on input
+            if (moveX !== 0 || moveY !== 0) {
+                this.player.angle = Math.atan2(moveY, moveX);
+                this.player.vx += Math.cos(this.player.angle) * this.player.speed;
+                this.player.vy += Math.sin(this.player.angle) * this.player.speed;
+            }
+        } else {
+            // When landed, allow rotation only
+            if (this.keys['a'] || this.keys['arrowleft']) {
+                this.player.angle -= 0.05;
+            }
+            if (this.keys['d'] || this.keys['arrowright']) {
+                this.player.angle += 0.05;
+            }
+
+            // Apply strong friction when landed
+            this.player.vx *= 0.80;
+            this.player.vy *= 0.80;
         }
 
         // Apply friction
         this.player.vx *= 0.94;
         this.player.vy *= 0.94;
 
-        // Limit max speed
+        // Stop completely if moving very slowly
         const speed = Math.sqrt(this.player.vx ** 2 + this.player.vy ** 2);
+        if (speed < 0.01) {
+            this.player.vx = 0;
+            this.player.vy = 0;
+        }
+
+        // Limit max speed
         if (speed > this.player.maxSpeed) {
             this.player.vx = (this.player.vx / speed) * this.player.maxSpeed;
             this.player.vy = (this.player.vy / speed) * this.player.maxSpeed;
@@ -809,9 +830,10 @@ class Game {
             `;
         } else if (this.player.vehicleType === 'helicopter') {
             controlsHTML = `
-                <p>WASD - Move / Fly</p>
-                <p>Q/E - Strafe left / right (when airborne)</p>
-                <p>Z/X - Decrease / Increase altitude</p>
+                <p>Z - Takeoff / Land</p>
+                <p>WASD - Move / Fly (when airborne)</p>
+                <p>Q/E or A/D - Strafe left / right (when airborne)</p>
+                <p>A/D - Rotate (when landed)</p>
                 <p>Space - Fire weapon</p>
                 <p>F - Switch vehicle at base</p>
             `;
@@ -1183,6 +1205,14 @@ class Game {
             this.ctx.fillRect(-18, -14, 36, 3);
             this.ctx.fillRect(-18, 11, 36, 3);
 
+            // Draw direction indicator (forward)
+            this.ctx.strokeStyle = '#0f0';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, 0);
+            this.ctx.lineTo(20, 0);
+            this.ctx.stroke();
+
             // Reset rotation for turret
             this.ctx.rotate(-this.player.angle);
             this.ctx.rotate(this.player.turretAngle);
@@ -1245,6 +1275,14 @@ class Game {
             // Draw tail
             this.ctx.fillStyle = '#3a3a5a';
             this.ctx.fillRect(12, -2, 15, 4);
+
+            // Draw direction indicator (forward)
+            this.ctx.strokeStyle = '#0f0';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, 0);
+            this.ctx.lineTo(20, 0);
+            this.ctx.stroke();
 
             // Draw main rotor (spinning) - speed based on altitude
             const rotorSpeed = this.player.altitude > 0.3 ? 0.08 : 0.02;
